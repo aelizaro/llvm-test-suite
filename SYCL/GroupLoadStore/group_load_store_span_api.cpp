@@ -33,14 +33,14 @@ void test_no_mem(sycl::queue q, InputContainer &input,
           [=](sycl::nd_item<1> item) {
             InputT data[items_per_thread];
 
-            sycl_exp::joint_load(item.get_group(), in.get_pointer(),
+            sycl_exp::group_load(item.get_group(), in.get_pointer(),
                                  sycl::span{data});
 
             for (int i = 0; i < items_per_thread; ++i) {
               data[i] += item.get_global_linear_id() * 100000 + i * 1000;
             }
 
-            sycl_exp::joint_store(item.get_group(), out.get_pointer(),
+            sycl_exp::group_store(item.get_group(), out.get_pointer(),
                                   sycl::span{data});
           });
     });
@@ -71,13 +71,13 @@ void test_local_acc(sycl::queue q, InputContainer &input,
             sycl_exp::group_with_scratchpad gh{
                 item.get_group(), sycl::span{buf_ptr, temp_memory_size}};
 
-            sycl_exp::joint_load(gh, in.get_pointer(), sycl::span{data});
+            sycl_exp::group_load(gh, in.get_pointer(), sycl::span{data});
 
             for (int i = 0; i < items_per_thread; ++i) {
               data[i] += item.get_global_linear_id() * 100000 + i * 1000;
             }
 
-            sycl_exp::joint_store(gh, out.get_pointer(), sycl::span{data});
+            sycl_exp::group_store(gh, out.get_pointer(), sycl::span{data});
           });
     });
   }
@@ -109,13 +109,13 @@ void test_group_local_memory(sycl::queue q, InputContainer &input,
             sycl_exp::group_with_scratchpad gh{
                 item.get_group(), sycl::span{buf_ptr, temp_memory_size}};
 
-            sycl_exp::joint_load(gh, in.get_pointer(), sycl::span{data});
+            sycl_exp::group_load(gh, in.get_pointer(), sycl::span{data});
 
             for (int i = 0; i < items_per_thread; ++i) {
               data[i] += item.get_global_linear_id() * 100000 + i * 1000;
             }
 
-            sycl_exp::joint_store(gh, out.get_pointer(), sycl::span{data});
+            sycl_exp::group_store(gh, out.get_pointer(), sycl::span{data});
           });
     });
   }
@@ -138,7 +138,7 @@ void test_marray(sycl::queue q, InputContainer &input,
           [=](sycl::nd_item<1> item) {
             sycl::marray<InputT, items_per_thread> data;
 
-            sycl_exp::joint_load(
+            sycl_exp::group_load(
                 item.get_group(), in.get_pointer(),
                 sycl::span<InputT, items_per_thread>{data.begin(), data.end()});
 
@@ -146,7 +146,7 @@ void test_marray(sycl::queue q, InputContainer &input,
               data[i] += item.get_global_linear_id() * 100000 + i * 1000;
             }
 
-            sycl_exp::joint_store(
+            sycl_exp::group_store(
                 item.get_group(), out.get_pointer(),
                 sycl::span<InputT, items_per_thread>{data.begin(), data.end()});
           });
@@ -170,7 +170,7 @@ void test_vec(sycl::queue q, InputContainer &input, OutputContainer &output) {
           [=](sycl::nd_item<1> item) {
             sycl::vec<InputT, items_per_thread> data;
 
-            sycl_exp::joint_load(item.get_group(), in.get_pointer(),
+            sycl_exp::group_load(item.get_group(), in.get_pointer(),
                                  sycl::span<InputT, items_per_thread>{
                                      &data[0], &data[0] + items_per_thread});
 
@@ -178,7 +178,7 @@ void test_vec(sycl::queue q, InputContainer &input, OutputContainer &output) {
               data[i] += item.get_global_linear_id() * 100000 + i * 1000;
             }
 
-            sycl_exp::joint_store(item.get_group(), out.get_pointer(),
+            sycl_exp::group_store(item.get_group(), out.get_pointer(),
                                   sycl::span<InputT, items_per_thread>{
                                       &data[0], &data[0] + items_per_thread});
           });
