@@ -16,6 +16,66 @@ constexpr std::size_t block_count = 2;
 constexpr std::size_t size = block_count * block_size * items_per_thread;
 
 template <typename InputContainer, typename OutputContainer>
+void test_single_value(sycl::queue q, InputContainer &input,
+                       OutputContainer &output) {
+  typedef typename InputContainer::value_type InputT;
+  typedef typename OutputContainer::value_type OutputT;
+  {
+    sycl::buffer<InputT> in_buf(input.data(), input.size());
+    sycl::buffer<OutputT> out_buf(output.data(), output.size());
+
+    q.submit([&](sycl::handler &cgh) {
+      sycl::accessor in(in_buf, cgh, sycl::read_only);
+      sycl::accessor out(out_buf, cgh, sycl::write_only);
+
+      cgh.parallel_for(sycl::nd_range<1>(size, block_size),
+                       [=](sycl::nd_item<1> item) {
+                         auto group = item.get_group();
+
+                         InputT data;
+
+                         sycl_exp::group_load(group, in.get_pointer(), data);
+
+                         data += item.get_global_linear_id() * 100000;
+
+                         sycl_exp::group_store(group, data, out.get_pointer());
+                       });
+    });
+  }
+}
+
+template <typename InputContainer, typename OutputContainer>
+void test_vec(sycl::queue q, InputContainer &input, OutputContainer &output) {
+  typedef typename InputContainer::value_type InputT;
+  typedef typename OutputContainer::value_type OutputT;
+  {
+    sycl::buffer<InputT> in_buf(input.data(), input.size());
+    sycl::buffer<OutputT> out_buf(output.data(), output.size());
+
+    q.submit([&](sycl::handler &cgh) {
+      sycl::accessor in(in_buf, cgh, sycl::read_only);
+      sycl::accessor out(out_buf, cgh, sycl::write_only);
+
+      cgh.parallel_for(sycl::nd_range<1>(block_count * block_size, block_size),
+                       [=](sycl::nd_item<1> item) {
+                         auto group = item.get_group();
+
+                         sycl::vec<InputT, items_per_thread> data;
+
+                         sycl_exp::group_load(group, in.get_pointer(), data);
+
+                         for (int i = 0; i < items_per_thread; ++i) {
+                           data[i] +=
+                               item.get_global_linear_id() * 100000 + i * 1000;
+                         }
+
+                         sycl_exp::group_store(group, data, out.get_pointer());
+                       });
+    });
+  }
+}
+
+template <typename InputContainer, typename OutputContainer>
 void test_no_mem(sycl::queue q, InputContainer &input,
                  OutputContainer &output) {
   typedef typename InputContainer::value_type InputT;
@@ -40,8 +100,8 @@ void test_no_mem(sycl::queue q, InputContainer &input,
               data[i] += item.get_global_linear_id() * 100000 + i * 1000;
             }
 
-            sycl_exp::group_store(item.get_group(), out.get_pointer(),
-                                  sycl::span{data});
+            sycl_exp::group_store(item.get_group(), sycl::span{data},
+                                  out.get_pointer());
           });
     });
   }
@@ -77,7 +137,7 @@ void test_local_acc(sycl::queue q, InputContainer &input,
               data[i] += item.get_global_linear_id() * 100000 + i * 1000;
             }
 
-            sycl_exp::group_store(gh, out.get_pointer(), sycl::span{data});
+            sycl_exp::group_store(gh, sycl::span{data}, out.get_pointer());
           });
     });
   }
@@ -115,7 +175,7 @@ void test_group_local_memory(sycl::queue q, InputContainer &input,
               data[i] += item.get_global_linear_id() * 100000 + i * 1000;
             }
 
-            sycl_exp::group_store(gh, out.get_pointer(), sycl::span{data});
+            sycl_exp::group_store(gh, sycl::span{data}, out.get_pointer());
           });
     });
   }
@@ -147,15 +207,17 @@ void test_marray(sycl::queue q, InputContainer &input,
             }
 
             sycl_exp::group_store(
-                item.get_group(), out.get_pointer(),
-                sycl::span<InputT, items_per_thread>{data.begin(), data.end()});
+                item.get_group(),
+                sycl::span<InputT, items_per_thread>{data.begin(), data.end()},
+                out.get_pointer());
           });
     });
   }
 }
 
 template <typename InputContainer, typename OutputContainer>
-void test_vec(sycl::queue q, InputContainer &input, OutputContainer &output) {
+void test_vec_span_api(sycl::queue q, InputContainer &input,
+                       OutputContainer &output) {
   typedef typename InputContainer::value_type InputT;
   typedef typename OutputContainer::value_type OutputT;
   {
@@ -178,12 +240,28 @@ void test_vec(sycl::queue q, InputContainer &input, OutputContainer &output) {
               data[i] += item.get_global_linear_id() * 100000 + i * 1000;
             }
 
-            sycl_exp::group_store(item.get_group(), out.get_pointer(),
+            sycl_exp::group_store(item.get_group(),
                                   sycl::span<InputT, items_per_thread>{
-                                      &data[0], &data[0] + items_per_thread});
+                                      &data[0], &data[0] + items_per_thread},
+                                  out.get_pointer());
           });
     });
   }
+}
+
+template <typename InputContainer, typename OutputContainer>
+int check_correctness_single_value(InputContainer &input,
+                                   OutputContainer &output,
+                                   std::string test_name) {
+  for (int i = 0; i < input.size(); i++) {
+    if ((input[i] + i * 100000) != output[i]) {
+      std::cout << i << " " << input[i] << " " << output[i] << std::endl;
+      std::cout << test_name << " test failed" << std::endl;
+      return 1;
+    }
+  }
+  std::cout << test_name << " test passed" << std::endl;
+  return 0;
 }
 
 template <typename InputContainer, typename OutputContainer>
@@ -204,11 +282,23 @@ int check_correctness(InputContainer &input, OutputContainer &output,
 }
 
 int main() {
-
   sycl::queue q;
 
   std::vector<int> input(size);
   std::vector<int> output(size);
+
+  std::iota(input.begin(), input.end(), 0);
+  std::fill(output.begin(), output.end(), 0);
+
+  test_single_value(q, input, output);
+  assert(check_correctness_single_value(input, output, "single value") == 0);
+
+  std::iota(input.begin(), input.end(), 0);
+  std::fill(output.begin(), output.end(), 0);
+
+  test_vec(q, input, output);
+  assert(check_correctness(input, output, "sycl::vec") == 0);
+
   std::iota(input.begin(), input.end(), 0);
   std::fill(output.begin(), output.end(), 0);
 
@@ -236,8 +326,8 @@ int main() {
   std::iota(input.begin(), input.end(), 0);
   std::fill(output.begin(), output.end(), 0);
 
-  test_vec(q, input, output);
-  assert(check_correctness(input, output, "sycl::vec") == 0);
+  test_vec_span_api(q, input, output);
+  assert(check_correctness(input, output, "sycl::vec span api") == 0);
 
   std::cout << "All tests passed" << std::endl;
 }
