@@ -28,18 +28,20 @@ void test_single_value(sycl::queue q, InputContainer &input,
       sycl::accessor in(in_buf, cgh, sycl::read_only);
       sycl::accessor out(out_buf, cgh, sycl::write_only);
 
-      cgh.parallel_for(sycl::nd_range<1>(size, block_size),
-                       [=](sycl::nd_item<1> item) {
-                         auto group = item.get_group();
+      cgh.parallel_for(
+          sycl::nd_range<1>(size, block_size), [=](sycl::nd_item<1> item) {
+            auto group = item.get_group();
 
-                         InputT data;
+            InputT data;
 
-                         sycl_exp::group_load(group, in.get_pointer(), data);
+            auto offset = group.get_group_id(0) * group.get_local_range(0);
 
-                         data += item.get_global_linear_id() * 100000;
+            sycl_exp::group_load(group, in.get_pointer() + offset, data);
 
-                         sycl_exp::group_store(group, data, out.get_pointer());
-                       });
+            data += item.get_global_linear_id() * 100000;
+
+            sycl_exp::group_store(group, data, out.get_pointer() + offset);
+          });
     });
   }
 }
@@ -56,21 +58,24 @@ void test_vec(sycl::queue q, InputContainer &input, OutputContainer &output) {
       sycl::accessor in(in_buf, cgh, sycl::read_only);
       sycl::accessor out(out_buf, cgh, sycl::write_only);
 
-      cgh.parallel_for(sycl::nd_range<1>(block_count * block_size, block_size),
-                       [=](sycl::nd_item<1> item) {
-                         auto group = item.get_group();
+      cgh.parallel_for(
+          sycl::nd_range<1>(block_count * block_size, block_size),
+          [=](sycl::nd_item<1> item) {
+            auto group = item.get_group();
 
-                         sycl::vec<InputT, items_per_thread> data;
+            auto offset = group.get_group_id(0) * group.get_local_range(0) *
+                          items_per_thread;
 
-                         sycl_exp::group_load(group, in.get_pointer(), data);
+            sycl::vec<InputT, items_per_thread> data;
 
-                         for (int i = 0; i < items_per_thread; ++i) {
-                           data[i] +=
-                               item.get_global_linear_id() * 100000 + i * 1000;
-                         }
+            sycl_exp::group_load(group, in.get_pointer() + offset, data);
 
-                         sycl_exp::group_store(group, data, out.get_pointer());
-                       });
+            for (int i = 0; i < items_per_thread; ++i) {
+              data[i] += item.get_global_linear_id() * 100000 + i * 1000;
+            }
+
+            sycl_exp::group_store(group, data, out.get_pointer() + offset);
+          });
     });
   }
 }
@@ -88,21 +93,27 @@ void test_no_mem(sycl::queue q, InputContainer &input,
       sycl::accessor in(in_buf, cgh, sycl::read_only);
       sycl::accessor out(out_buf, cgh, sycl::write_only);
 
-      cgh.parallel_for(
-          sycl::nd_range<1>(block_count * block_size, block_size),
-          [=](sycl::nd_item<1> item) {
-            InputT data[items_per_thread];
+      cgh.parallel_for(sycl::nd_range<1>(block_count * block_size, block_size),
+                       [=](sycl::nd_item<1> item) {
+                         auto group = item.get_group();
 
-            sycl_exp::group_load(item.get_group(), in.get_pointer(),
-                                 sycl::span{data});
+                         auto offset = group.get_group_id(0) *
+                                       group.get_local_range(0) *
+                                       items_per_thread;
 
-            for (int i = 0; i < items_per_thread; ++i) {
-              data[i] += item.get_global_linear_id() * 100000 + i * 1000;
-            }
+                         InputT data[items_per_thread];
 
-            sycl_exp::group_store(item.get_group(), sycl::span{data},
-                                  out.get_pointer());
-          });
+                         sycl_exp::group_load(group, in.get_pointer() + offset,
+                                              sycl::span{data});
+
+                         for (int i = 0; i < items_per_thread; ++i) {
+                           data[i] +=
+                               item.get_global_linear_id() * 100000 + i * 1000;
+                         }
+
+                         sycl_exp::group_store(group, sycl::span{data},
+                                               out.get_pointer() + offset);
+                       });
     });
   }
 }
@@ -123,22 +134,30 @@ void test_local_acc(sycl::queue q, InputContainer &input,
           sycl_exp::memory_required<InputT, items_per_thread>(
               sycl::memory_scope::work_group, block_size);
       sycl::local_accessor<std::byte> buf(temp_memory_size, cgh);
-      cgh.parallel_for(
-          sycl::nd_range<1>(block_count * block_size, block_size),
-          [=](sycl::nd_item<1> item) {
-            InputT data[items_per_thread];
-            std::byte *buf_ptr = buf.get_pointer().get();
-            sycl_exp::group_with_scratchpad gh{
-                item.get_group(), sycl::span{buf_ptr, temp_memory_size}};
+      cgh.parallel_for(sycl::nd_range<1>(block_count * block_size, block_size),
+                       [=](sycl::nd_item<1> item) {
+                         auto group = item.get_group();
 
-            sycl_exp::group_load(gh, in.get_pointer(), sycl::span{data});
+                         auto offset = group.get_group_id(0) *
+                                       group.get_local_range(0) *
+                                       items_per_thread;
 
-            for (int i = 0; i < items_per_thread; ++i) {
-              data[i] += item.get_global_linear_id() * 100000 + i * 1000;
-            }
+                         InputT data[items_per_thread];
+                         std::byte *buf_ptr = buf.get_pointer().get();
+                         sycl_exp::group_with_scratchpad gh{
+                             group, sycl::span{buf_ptr, temp_memory_size}};
 
-            sycl_exp::group_store(gh, sycl::span{data}, out.get_pointer());
-          });
+                         sycl_exp::group_load(gh, in.get_pointer() + offset,
+                                              sycl::span{data});
+
+                         for (int i = 0; i < items_per_thread; ++i) {
+                           data[i] +=
+                               item.get_global_linear_id() * 100000 + i * 1000;
+                         }
+
+                         sycl_exp::group_store(gh, sycl::span{data},
+                                               out.get_pointer() + offset);
+                       });
     });
   }
 }
@@ -158,25 +177,33 @@ void test_group_local_memory(sycl::queue q, InputContainer &input,
       constexpr auto temp_memory_size =
           sycl_exp::memory_required<InputT, items_per_thread>(
               sycl::memory_scope::work_group, block_size);
-      cgh.parallel_for(
-          sycl::nd_range<1>(block_count * block_size, block_size),
-          [=](sycl::nd_item<1> item) {
-            InputT data[items_per_thread];
-            auto scratch = sycl::ext::oneapi::group_local_memory<
-                std::byte[temp_memory_size]>(item.get_group());
-            std::byte *buf_ptr = (std::byte *)(scratch.get());
+      cgh.parallel_for(sycl::nd_range<1>(block_count * block_size, block_size),
+                       [=](sycl::nd_item<1> item) {
+                         auto group = item.get_group();
 
-            sycl_exp::group_with_scratchpad gh{
-                item.get_group(), sycl::span{buf_ptr, temp_memory_size}};
+                         auto offset = group.get_group_id(0) *
+                                       group.get_local_range(0) *
+                                       items_per_thread;
 
-            sycl_exp::group_load(gh, in.get_pointer(), sycl::span{data});
+                         InputT data[items_per_thread];
+                         auto scratch = sycl::ext::oneapi::group_local_memory<
+                             std::byte[temp_memory_size]>(group);
+                         std::byte *buf_ptr = (std::byte *)(scratch.get());
 
-            for (int i = 0; i < items_per_thread; ++i) {
-              data[i] += item.get_global_linear_id() * 100000 + i * 1000;
-            }
+                         sycl_exp::group_with_scratchpad gh{
+                             group, sycl::span{buf_ptr, temp_memory_size}};
 
-            sycl_exp::group_store(gh, sycl::span{data}, out.get_pointer());
-          });
+                         sycl_exp::group_load(gh, in.get_pointer() + offset,
+                                              sycl::span{data});
+
+                         for (int i = 0; i < items_per_thread; ++i) {
+                           data[i] +=
+                               item.get_global_linear_id() * 100000 + i * 1000;
+                         }
+
+                         sycl_exp::group_store(gh, sycl::span{data},
+                                               out.get_pointer() + offset);
+                       });
     });
   }
 }
@@ -196,10 +223,15 @@ void test_marray(sycl::queue q, InputContainer &input,
       cgh.parallel_for(
           sycl::nd_range<1>(block_count * block_size, block_size),
           [=](sycl::nd_item<1> item) {
+            auto group = item.get_group();
+
+            auto offset = group.get_group_id(0) * group.get_local_range(0) *
+                          items_per_thread;
+
             sycl::marray<InputT, items_per_thread> data;
 
             sycl_exp::group_load(
-                item.get_group(), in.get_pointer(),
+                group, in.get_pointer() + offset,
                 sycl::span<InputT, items_per_thread>{data.begin(), data.end()});
 
             for (int i = 0; i < items_per_thread; ++i) {
@@ -207,9 +239,9 @@ void test_marray(sycl::queue q, InputContainer &input,
             }
 
             sycl_exp::group_store(
-                item.get_group(),
+                group,
                 sycl::span<InputT, items_per_thread>{data.begin(), data.end()},
-                out.get_pointer());
+                out.get_pointer() + offset);
           });
     });
   }
@@ -230,9 +262,14 @@ void test_vec_span_api(sycl::queue q, InputContainer &input,
       cgh.parallel_for(
           sycl::nd_range<1>(block_count * block_size, block_size),
           [=](sycl::nd_item<1> item) {
+            auto group = item.get_group();
+
+            auto offset = group.get_group_id(0) * group.get_local_range(0) *
+                          items_per_thread;
+
             sycl::vec<InputT, items_per_thread> data;
 
-            sycl_exp::group_load(item.get_group(), in.get_pointer(),
+            sycl_exp::group_load(group, in.get_pointer() + offset,
                                  sycl::span<InputT, items_per_thread>{
                                      &data[0], &data[0] + items_per_thread});
 
@@ -240,10 +277,10 @@ void test_vec_span_api(sycl::queue q, InputContainer &input,
               data[i] += item.get_global_linear_id() * 100000 + i * 1000;
             }
 
-            sycl_exp::group_store(item.get_group(),
+            sycl_exp::group_store(group,
                                   sycl::span<InputT, items_per_thread>{
                                       &data[0], &data[0] + items_per_thread},
-                                  out.get_pointer());
+                                  out.get_pointer() + offset);
           });
     });
   }
